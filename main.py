@@ -25,12 +25,14 @@ from app.routes import monthly_salary
 from app.routes import roles
 from app.routes import payment_records
 from app.routes import company_expenses
+from app.routes import face
+from app.routes import onboarding
 
 from app.core.database import engine
 from app.core.models import (
     ExpenseHeader, ExpenseDetail, DepartmentAnnouncement, Message, PersonalEvent,
     AdvancePayment, Fine, Holiday, JobPosition, Vendor, MonthlySalary,
-    Role, Permission, RolePermission, PaymentRecord, CompanyExpense, Base
+    Role, Permission, RolePermission, PaymentRecord, CompanyExpense, FaceEncoding, Base
 )
 
 # Create only the new tables that don't exist yet
@@ -53,6 +55,7 @@ Base.metadata.create_all(
         RolePermission.__table__,
         PaymentRecord.__table__,
         CompanyExpense.__table__,
+        FaceEncoding.__table__,
     ],
     checkfirst=True,
 )
@@ -121,6 +124,12 @@ app.include_router(roles.router, prefix="/api", tags=["Roles"])
 # Payment Records / Company Expenses
 app.include_router(payment_records.router, prefix="/api", tags=["Payment Records"])
 app.include_router(company_expenses.router, prefix="/api", tags=["Company Expenses"])
+
+# Face recognition
+app.include_router(face.router, prefix="/api/face", tags=["Face Recognition"])
+
+# Onboarding
+app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
 
 if __name__ == "__main__":
     import uvicorn

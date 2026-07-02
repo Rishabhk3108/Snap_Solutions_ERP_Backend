@@ -5,3 +5,7 @@ psycopg2-binary
 python-dotenv
 bcrypt
 pyjwt
+face_recognition
+python-multipart
+Pillow
+numpy

@@ -27,6 +27,7 @@ class User(Base):
     end_date = Column("end_date", Date, nullable=True)
     remark = Column(String(255), nullable=True)
     department_id = Column("department_id", Integer, ForeignKey("department.id"), nullable=True)
+    onboarding_complete = Column("onboarding_complete", Boolean, nullable=False, server_default='false')
 
     department = relationship("Department", back_populates="users")
     attendances = relationship("Attendance", back_populates="user", foreign_keys="Attendance.empid")
@@ -368,3 +369,15 @@ class CompanyExpense(Base):
     status = Column(String(20), nullable=False, server_default="Pending")
 
     department = relationship("Department", foreign_keys=[department_id])
+
+
+class FaceEncoding(Base):
+    __tablename__ = "face_encodings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    empid = Column(Integer, ForeignKey("employees.id"), nullable=False, unique=True)
+    encoding = Column(Text, nullable=False)  # JSON array of 128 floats from dlib ResNet
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    employee = relationship("User", foreign_keys=[empid])

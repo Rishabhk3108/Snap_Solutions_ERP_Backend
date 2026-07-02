@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -234,3 +234,53 @@ def get_incomplete_checkouts_today(db: Session = Depends(get_db)):
         }
         for att, emp in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/attendance/checkin  — multipart, used by the mobile app
+# Accepts the same fields as /add plus an optional faceImage file.
+# If the employee has a registered face, the selfie must match it (distance < 0.6).
+# If no face is registered yet, check-in is allowed (graceful rollout).
+# ---------------------------------------------------------------------------
+
+@router.post("/checkin")
+async def checkin_with_face(
+    empid: int = Form(...),
+    projectId: int = Form(...),
+    date: str = Form(...),
+    startTime: str = Form(...),
+    location: str = Form(...),
+    year: int = Form(...),
+    month: int = Form(...),
+    faceImage: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+):
+    if faceImage is not None:
+        from app.core.models import FaceEncoding
+        from app.services import face as face_svc
+
+        image_bytes = await faceImage.read()
+        encoding = face_svc.extract_encoding(image_bytes)
+
+        if encoding is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No face detected in the photo. Move to better lighting and try again."},
+            )
+
+        stored = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
+        if stored is not None:
+            result = face_svc.compare(stored.encoding, encoding)
+            if not result["match"]:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "error": "Face not recognized. Please retake the selfie or contact admin.",
+                        "distance": result["distance"],
+                    },
+                )
+
+    result = svc.add_attendance(
+        db, empid, projectId, date, startTime, location, year, month,
+    )
+    return _respond(result)

@@ -45,6 +45,7 @@ def login(db: Session, username: str, password: str):
         "role": user.role,
         "departmentId": dept_id,
         "roleId": user.role_id,
+        "onboarding_complete": bool(user.onboarding_complete),
     }
     token = _make_token(user_data)
     return 200, {"message": "Login successful!", "token": token, "user": user_data}
