@@ -42,15 +42,16 @@ def extract_encoding(image_bytes: bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = _fix_rotation(img)
 
-    # Resize to max 640px on the longer side — keeps inference fast
-    max_dim = 640
+    # Resize to max 1024px on the longer side — preserves enough detail for detection
+    max_dim = 1024
     w, h = img.size
     if max(w, h) > max_dim:
         scale = max_dim / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
     arr = np.array(img)
-    locations = face_recognition.face_locations(arr)
+    # upsample=2 finds faces that are smaller or slightly off-angle
+    locations = face_recognition.face_locations(arr, number_of_times_to_upsample=2)
     if not locations:
         return None
     encodings = face_recognition.face_encodings(arr, locations)
