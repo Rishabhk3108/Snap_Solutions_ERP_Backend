@@ -65,7 +65,8 @@ def find_one(db: Session, record_id: int):
 def update_by_user_id(db: Session, user_id: int, body: dict):
     pi = db.query(UserPersonalInfo).filter(UserPersonalInfo.user_id == user_id).first()
     if not pi:
-        return 404, {"message": f"No personal info for user_id={user_id}"}
+        pi = UserPersonalInfo(user_id=user_id)
+        db.add(pi)
 
     field_map = {
         "dateOfBirth": "date_of_birth",
