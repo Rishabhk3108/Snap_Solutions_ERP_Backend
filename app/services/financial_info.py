@@ -33,6 +33,9 @@ def _serialize(f: UserFinancialInfo) -> dict:
         "otStatus": f.ot_status,
         "esicStatus": f.esic_status,
         "OtWorkingHours": f.ot_working_hours,
+        "panNumber": f.pan_number,
+        "esicNumber": f.esic_number,
+        "pfNumber": f.pf_number,
     }
 
 
@@ -116,6 +119,11 @@ def salary_update(db: Session, user_id: int, salary_basic: int, salary_gross: in
         iban=existing.iban,
         start_date=date.today(),
         end_date=None,
+        ot_status=existing.ot_status,
+        esic_status=existing.esic_status,
+        pan_number=existing.pan_number,
+        esic_number=existing.esic_number,
+        pf_number=existing.pf_number,
     )
     db.add(new_record)
     db.commit()
@@ -171,6 +179,9 @@ def _build(body: dict) -> UserFinancialInfo:
         ot_status=body.get("otStatus", "No"),
         esic_status=body.get("esicStatus", "No"),
         ot_working_hours=body.get("OtWorkingHours", 8),
+        pan_number=body.get("panNumber"),
+        esic_number=body.get("esicNumber"),
+        pf_number=body.get("pfNumber"),
     )
 
 
@@ -192,6 +203,8 @@ def _apply(fi: UserFinancialInfo, body: dict):
         "startDate": "start_date", "endDate": "end_date",
         "otStatus": "ot_status", "esicStatus": "esic_status",
         "OtWorkingHours": "ot_working_hours",
+        "panNumber": "pan_number", "esicNumber": "esic_number",
+        "pfNumber": "pf_number",
     }
     for key, attr in field_map.items():
         if key in body:

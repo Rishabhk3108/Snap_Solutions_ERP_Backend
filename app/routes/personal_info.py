@@ -24,6 +24,8 @@ class PersonalInfoBody(BaseModel):
     mobile: Optional[str] = None
     phone: Optional[str] = None
     emailAddress: Optional[str] = None
+    nomineeName: Optional[str] = None
+    nomineeRelationship: Optional[str] = None
 
 
 class PersonalInfoUpdateBody(BaseModel):
@@ -39,6 +41,8 @@ class PersonalInfoUpdateBody(BaseModel):
     mobile: Optional[str] = None
     phone: Optional[str] = None
     emailAddress: Optional[str] = None
+    nomineeName: Optional[str] = None
+    nomineeRelationship: Optional[str] = None
 
 
 @router.post("")

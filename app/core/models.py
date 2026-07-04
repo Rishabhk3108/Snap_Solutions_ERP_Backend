@@ -108,6 +108,9 @@ class UserFinancialInfo(Base):
     ot_status = Column("ot_status", String(3), nullable=False, server_default="No")
     esic_status = Column("esic_status", String(3), nullable=False, server_default="No")
     ot_working_hours = Column("ot_working_hours", Integer, nullable=True, default=8)
+    pan_number = Column("pan_number", String(50), nullable=True)
+    esic_number = Column("esic_number", String(50), nullable=True)
+    pf_number = Column("pf_number", String(50), nullable=True)
 
     user = relationship("User", back_populates="financial_info")
 
@@ -129,6 +132,8 @@ class UserPersonalInfo(Base):
     mobile = Column(String(50), nullable=True)
     phone = Column(String(50), nullable=True)
     email_address = Column("email_address", String(255), nullable=True)
+    nominee_name = Column("nominee_name", String(255), nullable=True)
+    nominee_relationship = Column("nominee_relationship", String(100), nullable=True)
 
     user = relationship("User", back_populates="personal_info")
 
