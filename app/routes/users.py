@@ -95,12 +95,14 @@ def get_reportees(reportid: str, db: Session = Depends(get_db)):
 # ── Protected endpoints ───────────────────────────────────────
 @router.get("/users")
 def get_all_users(db: Session = Depends(get_db), auth=Depends(require_admin_or_manager)):
-    return svc.get_all_users(db)
+    caller = auth.get("user", {})
+    return svc.get_all_users(db, caller_role=caller.get("role"), caller_id=caller.get("id"))
 
 
 @router.get("/users/nullend")
 def get_active_users(db: Session = Depends(get_db), auth=Depends(require_admin_or_manager)):
-    return svc.get_all_active(db)
+    caller = auth.get("user", {})
+    return svc.get_all_active(db, caller_role=caller.get("role"), caller_id=caller.get("id"))
 
 
 @router.get("/users/notnull")
