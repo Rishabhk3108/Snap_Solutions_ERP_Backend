@@ -28,6 +28,7 @@ class User(Base):
     remark = Column(String(255), nullable=True)
     department_id = Column("department_id", Integer, ForeignKey("department.id"), nullable=True)
     onboarding_complete = Column("onboarding_complete", Boolean, nullable=False, server_default='false')
+    project_id = Column("project_id", Integer, ForeignKey("projects.id"), nullable=True)
 
     department = relationship("Department", back_populates="users")
     attendances = relationship("Attendance", back_populates="user", foreign_keys="Attendance.empid")
@@ -35,6 +36,7 @@ class User(Base):
     personal_info = relationship("UserPersonalInfo", back_populates="user", uselist=False)
     employee_record = relationship("EmployeeRecord", back_populates="user", uselist=False)
     applications = relationship("Application", back_populates="user")
+    project = relationship("Project", back_populates="members", foreign_keys=[project_id])
 
 
 class Project(Base):
@@ -42,8 +44,25 @@ class Project(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255))
+    status = Column(String(50), server_default="Active")
+    description = Column(Text, nullable=True)
+    customer_id = Column("customer_id", Integer, nullable=True)
+    start_date = Column("start_date", Date, nullable=True)
+    end_date = Column("end_date", Date, nullable=True)
 
     attendances = relationship("Attendance", back_populates="project")
+    members = relationship("User", back_populates="project", foreign_keys="[User.project_id]")
+    project_managers = relationship("ProjectManager", back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectManager(Base):
+    __tablename__ = "project_managers"
+
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    manager_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), primary_key=True)
+
+    project = relationship("Project", back_populates="project_managers")
+    manager_user = relationship("User", foreign_keys=[manager_id])
 
 
 class Attendance(Base):

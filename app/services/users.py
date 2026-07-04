@@ -28,6 +28,8 @@ def _serialize(u: User) -> dict:
         "departmentId": u.department_id,
         "department": {"id": u.department.id, "departmentName": u.department.department_name}
         if u.department else None,
+        "projectId": u.project_id,
+        "projectName": u.project.name if u.project else None,
     }
 
 
@@ -67,14 +69,26 @@ def get_max_id(db: Session):
     return 200, {"nextid": max_id + 1}
 
 
-def get_all_users(db: Session):
-    users = db.query(User).filter(User.end_date == None).all()
-    return [_serialize(u) for u in users]
+def get_all_users(db: Session, caller_role: str = None, caller_id: int = None):
+    query = db.query(User).filter(User.end_date == None)
+    if caller_role == "ROLE_MANAGER" and caller_id:
+        from app.core.models import ProjectManager
+        managed_ids = [pm.project_id for pm in db.query(ProjectManager).filter(ProjectManager.manager_id == caller_id).all()]
+        if not managed_ids:
+            return []
+        query = query.filter(User.project_id.in_(managed_ids))
+    return [_serialize(u) for u in query.all()]
 
 
-def get_all_active(db: Session):
-    users = db.query(User).filter(User.end_date == None).all()
-    return [_serialize(u) for u in users]
+def get_all_active(db: Session, caller_role: str = None, caller_id: int = None):
+    query = db.query(User).filter(User.end_date == None)
+    if caller_role == "ROLE_MANAGER" and caller_id:
+        from app.core.models import ProjectManager
+        managed_ids = [pm.project_id for pm in db.query(ProjectManager).filter(ProjectManager.manager_id == caller_id).all()]
+        if not managed_ids:
+            return []
+        query = query.filter(User.project_id.in_(managed_ids))
+    return [_serialize(u) for u in query.all()]
 
 
 def get_all_exited(db: Session):
