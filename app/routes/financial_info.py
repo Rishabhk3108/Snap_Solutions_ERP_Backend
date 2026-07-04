@@ -19,11 +19,11 @@ class FinancialInfoBody(BaseModel):
     allowanceHouseRent: Optional[int] = None
     allowanceMedical: Optional[int] = None
     allowanceSpecial: Optional[int] = None
-    allowanceFuel: Optional[int] = None
-    allowancePhoneBill: Optional[int] = None
+    allowanceTravelling: Optional[int] = None
     allowanceOther: Optional[int] = None
     allowanceTotal: Optional[int] = None
     deductionProvidentFund: Optional[int] = None
+    deductionProfessionalTax: Optional[int] = None
     deductionTax: Optional[int] = None
     deductionOther: Optional[int] = None
     deductionTotal: Optional[int] = None
