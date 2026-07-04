@@ -34,6 +34,9 @@ class FinancialInfoBody(BaseModel):
     otStatus: Optional[str] = "No"
     esicStatus: Optional[str] = "No"
     OtWorkingHours: Optional[int] = 8
+    panNumber: Optional[str] = None
+    esicNumber: Optional[str] = None
+    pfNumber: Optional[str] = None
 
 
 class SalaryUpdateBody(BaseModel):

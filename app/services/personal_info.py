@@ -19,6 +19,8 @@ def _serialize(p: UserPersonalInfo) -> dict:
         "mobile": p.mobile,
         "phone": p.phone,
         "emailAddress": p.email_address,
+        "nomineeName": p.nominee_name,
+        "nomineeRelationship": p.nominee_relationship,
     }
 
 
@@ -43,6 +45,8 @@ def create(db: Session, body: dict):
         mobile=body.get("mobile"),
         phone=body.get("phone"),
         email_address=body.get("emailAddress"),
+        nominee_name=body.get("nomineeName"),
+        nominee_relationship=body.get("nomineeRelationship"),
     )
     db.add(pi)
     db.commit()
@@ -81,6 +85,8 @@ def update_by_user_id(db: Session, user_id: int, body: dict):
         "mobile": "mobile",
         "phone": "phone",
         "emailAddress": "email_address",
+        "nomineeName": "nominee_name",
+        "nomineeRelationship": "nominee_relationship",
     }
     for key, attr in field_map.items():
         if key in body:
