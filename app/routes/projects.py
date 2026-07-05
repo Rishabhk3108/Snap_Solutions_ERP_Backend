@@ -171,12 +171,9 @@ def assign_manager(proj_id: int, body: AssignManagerBody, db: Session = Depends(
     mgr = db.query(User).filter(User.id == body.managerId).first()
     if not mgr:
         return JSONResponse(status_code=404, content={"error": "User not found"})
-    existing = db.query(ProjectManager).filter(
-        ProjectManager.project_id == proj_id,
-        ProjectManager.manager_id == body.managerId,
-    ).first()
-    if existing:
-        return JSONResponse(status_code=400, content={"error": "Manager already assigned to this project"})
+    current_count = db.query(ProjectManager).filter(ProjectManager.project_id == proj_id).count()
+    if current_count >= 1:
+        return JSONResponse(status_code=400, content={"error": "This project already has a manager. Remove them first."})
     db.add(ProjectManager(project_id=proj_id, manager_id=body.managerId))
     db.commit()
     return {"message": "Manager assigned"}
