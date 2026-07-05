@@ -358,8 +358,17 @@ def update_attendance_by_id_with_pass(
     }
 
 
+def _manager_emp_ids(db: Session, manager_id: int):
+    from app.core.models import ProjectManager
+    managed = [pm.project_id for pm in db.query(ProjectManager).filter(ProjectManager.manager_id == manager_id).all()]
+    if not managed:
+        return []
+    return [u.id for u in db.query(User).filter(User.project_id.in_(managed)).all()]
+
+
 def get_filtered_attendance(
-    db: Session, start_date: str, end_date: str, project_id: Optional[int]
+    db: Session, start_date: str, end_date: str, project_id: Optional[int],
+    caller_role: str = None, caller_id: int = None,
 ) -> dict:
     query = (
         db.query(Attendance)
@@ -372,9 +381,15 @@ def get_filtered_attendance(
     if project_id:
         query = query.filter(Attendance.project_id == project_id)
 
+    if caller_role == "ROLE_MANAGER" and caller_id:
+        emp_ids = _manager_emp_ids(db, caller_id)
+        if not emp_ids:
+            return {"status": 200, "data": []}
+        query = query.filter(Attendance.empid.in_(emp_ids))
+
     records = query.all()
     if not records:
-        return {"status": 400, "error": "No attendance records found for the given criteria."}
+        return {"status": 200, "data": []}
 
     result = [
         {
@@ -471,7 +486,8 @@ def clean_invalid_attendances(db: Session) -> dict:
 
 
 def get_attendance_by_filter_employee(
-    db: Session, start_date: str, end_date: str, empid: Optional[str]
+    db: Session, start_date: str, end_date: str, empid: Optional[str],
+    caller_role: str = None, caller_id: int = None,
 ) -> dict:
     query = (
         db.query(Attendance)
@@ -483,6 +499,12 @@ def get_attendance_by_filter_employee(
 
     if empid and empid.lower() != "all":
         query = query.filter(Attendance.empid == int(empid))
+
+    if caller_role == "ROLE_MANAGER" and caller_id:
+        emp_ids = _manager_emp_ids(db, caller_id)
+        if not emp_ids:
+            return {"status": 200, "data": []}
+        query = query.filter(Attendance.empid.in_(emp_ids))
 
     records = query.all()
     if not records:
@@ -617,14 +639,25 @@ def get_attendance_status(db: Session, empid: int, date_str: str) -> dict:
     return {"status": 200, "data": {"status": "A"}}
 
 
-def get_todays_attendance_summary(db: Session) -> dict:
+def get_todays_attendance_summary(db: Session, caller_role: str = None, caller_id: int = None) -> dict:
     today_str = datetime.today().strftime("%Y-%m-%d")
-    total = db.query(User).filter(User.active == True).count()
+    user_query = db.query(User).filter(User.active == True)
+
+    if caller_role == "ROLE_MANAGER" and caller_id:
+        emp_ids = _manager_emp_ids(db, caller_id)
+        if not emp_ids:
+            return {"status": 200, "data": {"present": 0, "absent": 0, "total": 0}}
+        user_query = user_query.filter(User.id.in_(emp_ids))
+
+    total = user_query.count()
+    scoped_ids = [u.id for u in user_query.all()]
+
     present = (
         db.query(Attendance.empid)
         .filter(
             Attendance.date == today_str,
             Attendance.start_time.isnot(None),
+            Attendance.empid.in_(scoped_ids),
         )
         .distinct()
         .count()

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.auth import require_token
 from app.services import attendance as svc
 
 router = APIRouter()
@@ -157,8 +158,10 @@ def update_attendance_by_id_with_pass(body: UpdateByIdWithPassBody, db: Session 
 
 # POST /api/attendance/attendanceByDateRange
 @router.post("/attendanceByDateRange")
-def get_filtered_attendance(body: AttendanceByDateRangeBody, db: Session = Depends(get_db)):
-    result = svc.get_filtered_attendance(db, body.startDate, body.endDate, body.projectId)
+def get_filtered_attendance(body: AttendanceByDateRangeBody, db: Session = Depends(get_db), auth=Depends(require_token)):
+    caller = auth.get("user", {})
+    result = svc.get_filtered_attendance(db, body.startDate, body.endDate, body.projectId,
+                                         caller_role=caller.get("role"), caller_id=caller.get("id"))
     return _respond(result)
 
 
@@ -179,10 +182,12 @@ def clean_invalid_attendances(db: Session = Depends(get_db)):
 # POST /api/attendance/attendanceByFilterEmp
 @router.post("/attendanceByFilterEmp")
 def get_attendance_by_filter_employee(
-    body: AttendanceByFilterEmpBody, db: Session = Depends(get_db)
+    body: AttendanceByFilterEmpBody, db: Session = Depends(get_db), auth=Depends(require_token)
 ):
+    caller = auth.get("user", {})
     result = svc.get_attendance_by_filter_employee(
-        db, body.startDate, body.endDate, body.empid
+        db, body.startDate, body.endDate, body.empid,
+        caller_role=caller.get("role"), caller_id=caller.get("id"),
     )
     return _respond(result)
 
@@ -206,8 +211,9 @@ def get_attendance_status(body: AttendanceStatusBody, db: Session = Depends(get_
 
 # GET /api/attendance/today-summary
 @router.get("/today-summary")
-def get_todays_attendance_summary(db: Session = Depends(get_db)):
-    result = svc.get_todays_attendance_summary(db)
+def get_todays_attendance_summary(db: Session = Depends(get_db), auth=Depends(require_token)):
+    caller = auth.get("user", {})
+    result = svc.get_todays_attendance_summary(db, caller_role=caller.get("role"), caller_id=caller.get("id"))
     return _respond(result)
 
 
