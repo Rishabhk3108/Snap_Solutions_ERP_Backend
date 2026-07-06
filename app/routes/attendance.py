@@ -262,29 +262,46 @@ async def checkin_with_face(
     db: Session = Depends(get_db),
 ):
     if faceImage is not None:
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
         from app.core.models import FaceEncoding
         from app.services import face as face_svc
 
         image_bytes = await faceImage.read()
-        encoding = face_svc.extract_encoding(image_bytes)
 
-        if encoding is None:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "No face detected in the photo. Move to better lighting and try again."},
-            )
-
-        stored = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
-        if stored is not None:
-            result = face_svc.compare(stored.encoding, encoding)
-            if not result["match"]:
-                return JSONResponse(
-                    status_code=401,
-                    content={
-                        "error": "Face not recognized. Please retake the selfie or contact admin.",
-                        "distance": result["distance"],
-                    },
+        # Run CPU-heavy dlib encoding in a thread pool with a hard timeout.
+        # If the server is too slow (no GPU), skip face verification and allow check-in.
+        FACE_TIMEOUT = 12.0  # seconds
+        try:
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                encoding = await asyncio.wait_for(
+                    loop.run_in_executor(pool, face_svc.extract_encoding, image_bytes),
+                    timeout=FACE_TIMEOUT,
                 )
+        except asyncio.TimeoutError:
+            encoding = None  # face recognition timed out — skip verification, allow check-in
+
+        if encoding is not None:
+            stored = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
+            if stored is None:
+                pass  # no registered face yet — allow check-in
+            else:
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, face_svc.compare, stored.encoding, encoding),
+                        timeout=5.0,
+                    )
+                    if not result["match"]:
+                        return JSONResponse(
+                            status_code=401,
+                            content={
+                                "error": "Face not recognized. Please retake the selfie or contact admin.",
+                                "distance": result["distance"],
+                            },
+                        )
+                except asyncio.TimeoutError:
+                    pass  # comparison timed out — allow check-in
 
     result = svc.add_attendance(
         db, empid, projectId, date, startTime, location, year, month,
