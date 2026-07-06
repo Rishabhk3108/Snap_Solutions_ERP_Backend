@@ -1,6 +1,9 @@
+import asyncio
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -8,6 +11,88 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import require_token
 from app.services import attendance as svc
+
+# ---------------------------------------------------------------------------
+# In-memory job store for async face-verification check-ins.
+# Key: short UUID string  Value: {"status": "processing"|"success"|"error", "message": str, "created_at": float}
+# Entries are cleaned up after 30 minutes to prevent unbounded growth.
+# Single-instance only — works on Railway's free tier.
+# ---------------------------------------------------------------------------
+_checkin_jobs: dict = {}
+
+
+def _cleanup_old_jobs():
+    cutoff = datetime.now(timezone.utc).timestamp() - 1800  # 30 min
+    stale = [k for k, v in _checkin_jobs.items() if v.get("created_at", 0) < cutoff]
+    for k in stale:
+        del _checkin_jobs[k]
+
+
+async def _run_face_checkin(
+    job_id: str,
+    empid: int,
+    project_id: int,
+    date: str,
+    start_time: str,
+    location: str,
+    year: int,
+    month: int,
+    image_bytes: bytes,
+):
+    """
+    Background coroutine: run face recognition in a thread executor so the event loop
+    stays free, then save attendance only if the face passes.
+    """
+    from app.services import face as face_svc
+    from app.core.models import FaceEncoding
+    from app.core.database import SessionLocal
+
+    try:
+        loop = asyncio.get_running_loop()
+
+        try:
+            encoding = await asyncio.wait_for(
+                loop.run_in_executor(None, face_svc.extract_encoding, image_bytes),
+                timeout=300.0,  # 5-minute hard cap
+            )
+        except asyncio.TimeoutError:
+            _checkin_jobs[job_id] = {
+                "status": "error",
+                "message": "Face verification timed out. Please try again.",
+            }
+            return
+
+        if encoding is None:
+            _checkin_jobs[job_id] = {
+                "status": "error",
+                "message": "No face detected. Please move to better lighting and try again.",
+            }
+            return
+
+        db = SessionLocal()
+        try:
+            stored = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
+            if stored is not None:
+                result = face_svc.compare(stored.encoding, encoding)
+                if not result["match"]:
+                    _checkin_jobs[job_id] = {
+                        "status": "error",
+                        "message": "Face not recognized. Please retake the selfie or contact admin.",
+                    }
+                    return
+
+            # Face passed (or no stored face yet) — save attendance NOW
+            svc.add_attendance(db, empid, project_id, date, start_time, location, year, month)
+            _checkin_jobs[job_id] = {"status": "success"}
+
+        finally:
+            db.close()
+
+    except Exception:
+        _checkin_jobs[job_id] = {
+            "status": "error",
+            "message": "Check-in failed unexpectedly. Please try again.",
+        }
 
 router = APIRouter()
 
@@ -251,6 +336,7 @@ def get_incomplete_checkouts_today(db: Session = Depends(get_db)):
 
 @router.post("/checkin")
 async def checkin_with_face(
+    background_tasks: BackgroundTasks,
     empid: int = Form(...),
     projectId: int = Form(...),
     date: str = Form(...),
@@ -261,49 +347,44 @@ async def checkin_with_face(
     faceImage: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
 ):
-    if faceImage is not None:
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        from app.core.models import FaceEncoding
-        from app.services import face as face_svc
+    """
+    Submit a check-in with an optional face selfie.
 
-        image_bytes = await faceImage.read()
+    When a face image is provided, attendance is NOT saved immediately.
+    Instead, a background job runs face recognition and saves attendance only if
+    the face matches.  The caller should poll GET /checkin/status/{jobId} until
+    status is "success" or "error".
 
-        # Run CPU-heavy dlib encoding in a thread pool with a hard timeout.
-        # If the server is too slow (no GPU), skip face verification and allow check-in.
-        FACE_TIMEOUT = 12.0  # seconds
-        try:
-            loop = asyncio.get_event_loop()
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                encoding = await asyncio.wait_for(
-                    loop.run_in_executor(pool, face_svc.extract_encoding, image_bytes),
-                    timeout=FACE_TIMEOUT,
-                )
-        except asyncio.TimeoutError:
-            encoding = None  # face recognition timed out — skip verification, allow check-in
+    When no face image is provided (fallback), attendance is saved directly.
+    """
+    if faceImage is None:
+        # No face image — save attendance directly (legacy / fallback path)
+        result = svc.add_attendance(db, empid, projectId, date, startTime, location, year, month)
+        return _respond(result)
 
-        if encoding is not None:
-            stored = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
-            if stored is None:
-                pass  # no registered face yet — allow check-in
-            else:
-                try:
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(None, face_svc.compare, stored.encoding, encoding),
-                        timeout=5.0,
-                    )
-                    if not result["match"]:
-                        return JSONResponse(
-                            status_code=401,
-                            content={
-                                "error": "Face not recognized. Please retake the selfie or contact admin.",
-                                "distance": result["distance"],
-                            },
-                        )
-                except asyncio.TimeoutError:
-                    pass  # comparison timed out — allow check-in
+    _cleanup_old_jobs()
+    job_id = uuid.uuid4().hex[:12]
+    _checkin_jobs[job_id] = {
+        "status": "processing",
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
 
-    result = svc.add_attendance(
-        db, empid, projectId, date, startTime, location, year, month,
+    image_bytes = await faceImage.read()
+    background_tasks.add_task(
+        _run_face_checkin,
+        job_id, empid, projectId, date, startTime, location, year, month, image_bytes,
     )
-    return _respond(result)
+
+    return JSONResponse({"jobId": job_id, "status": "processing"})
+
+
+@router.get("/checkin/status/{job_id}")
+def get_checkin_status(job_id: str):
+    """Poll this endpoint after POST /checkin to check face-verification progress."""
+    job = _checkin_jobs.get(job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Job not found or expired. Please try checking in again."},
+        )
+    return JSONResponse({"status": job["status"], "message": job.get("message", "")})
