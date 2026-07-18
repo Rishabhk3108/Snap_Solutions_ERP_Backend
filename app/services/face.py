@@ -82,7 +82,10 @@ def compare_fast(ref_photo_b64: str, live_image_bytes: bytes, threshold: float =
     Returns {'match': bool, 'score': float, 'error': str|None}
     """
     import base64
-    import cv2
+    try:
+        import cv2
+    except ImportError:
+        raise RuntimeError("opencv-python-headless is not installed. Run: pip install opencv-python-headless")
 
     ref_bytes = base64.b64decode(ref_photo_b64)
 
