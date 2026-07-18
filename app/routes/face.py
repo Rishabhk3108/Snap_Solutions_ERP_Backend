@@ -79,7 +79,12 @@ async def compare_face(
         return JSONResponse(status_code=404, content={"match": False, "message": "Reference photo missing. Please re-register face with admin."})
 
     image_bytes = await faceImage.read()
-    result = face_svc.compare_fast(existing.photo, image_bytes)
+    try:
+        result = face_svc.compare_fast(existing.photo, image_bytes)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Face comparison failed: {str(e)}")
 
     if result.get("error") == "no_face_detected":
         return JSONResponse(status_code=400, content={"match": False, "message": "No face detected in your photo. Please move to better lighting and try again."})
