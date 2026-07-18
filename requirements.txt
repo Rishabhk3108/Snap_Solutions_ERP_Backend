@@ -6,6 +6,7 @@ python-dotenv
 bcrypt
 pyjwt
 face_recognition
+opencv-python-headless
 python-multipart
 Pillow
 numpy
