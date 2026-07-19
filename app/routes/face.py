@@ -1,10 +1,7 @@
-import base64
-import io
 import json
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -14,25 +11,17 @@ from app.services import face as face_svc
 router = APIRouter()
 
 
-def _resize_and_encode(image_bytes: bytes, max_dim: int = 512) -> str:
-    """Resize photo to max_dim on the longest side and return as base64 JPEG string."""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    w, h = img.size
-    if max(w, h) > max_dim:
-        scale = max_dim / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
-    return base64.b64encode(buf.getvalue()).decode()
-
-
 @router.post("/register")
 async def register_face(
     empid: int = Form(...),
     faceImage: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Enrol an employee's face. Admin calls this once per employee with a clear photo."""
+    """
+    Enrol an employee's face. Admin calls this once per employee with a clear photo.
+    Stores both the dlib encoding (for verify-test) and a tight face crop (for
+    compare_fast at check-in — eliminates detection at check-in time entirely).
+    """
     if not face_svc.is_available():
         raise HTTPException(
             status_code=503,
@@ -40,7 +29,7 @@ async def register_face(
         )
 
     image_bytes = await faceImage.read()
-    encoding = face_svc.extract_encoding(image_bytes)
+    encoding, face_crop_b64 = face_svc.extract_encoding_and_face_crop(image_bytes)
     if encoding is None:
         raise HTTPException(
             status_code=400,
@@ -48,14 +37,13 @@ async def register_face(
         )
 
     encoding_json = json.dumps(encoding.tolist())
-    photo_b64 = _resize_and_encode(image_bytes)  # store resized reference photo
 
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
     if existing:
         existing.encoding = encoding_json
-        existing.photo = photo_b64
+        existing.photo = face_crop_b64
     else:
-        db.add(FaceEncoding(empid=empid, encoding=encoding_json, photo=photo_b64))
+        db.add(FaceEncoding(empid=empid, encoding=encoding_json, photo=face_crop_b64))
     db.commit()
 
     return {"message": "Face registered successfully", "empid": empid}
