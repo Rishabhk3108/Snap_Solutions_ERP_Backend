@@ -75,57 +75,59 @@ def is_available() -> bool:
     return _AVAILABLE
 
 
-def compare_fast(ref_photo_b64: str, live_image_bytes: bytes, threshold: float = 0.55) -> dict:
+def compare_fast(ref_photo_b64: str, live_image_bytes: bytes, threshold: float = 0.75) -> dict:
     """
-    Fast face comparison using OpenCV Haar cascade detection + histogram correlation.
-    Runs in ~200ms on CPU — used at check-in/check-out instead of slow dlib encoding.
+    Fast face comparison using dlib HOG detection (already installed via face_recognition)
+    + Pillow/numpy grayscale histogram similarity.
+    No OpenCV required. Runs in ~1-3s on CPU — much faster than full dlib encoding.
     Returns {'match': bool, 'score': float, 'error': str|None}
     """
     import base64
-    try:
-        import cv2
-    except ImportError:
-        raise RuntimeError("opencv-python-headless is not installed. Run: pip install opencv-python-headless")
 
     ref_bytes = base64.b64decode(ref_photo_b64)
 
-    ref_arr = np.frombuffer(ref_bytes, np.uint8)
-    live_arr = np.frombuffer(live_image_bytes, np.uint8)
+    def _load_and_detect(img_bytes: bytes):
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        w, h = img.size
+        if max(w, h) > 640:
+            scale = 640 / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        arr = np.array(img)
+        locations = face_recognition.face_locations(arr, number_of_times_to_upsample=1, model="hog")
+        return img, arr, locations
 
-    ref_img = cv2.imdecode(ref_arr, cv2.IMREAD_GRAYSCALE)
-    live_img = cv2.imdecode(live_arr, cv2.IMREAD_GRAYSCALE)
-
-    if ref_img is None or live_img is None:
+    try:
+        ref_img, ref_arr, ref_locs = _load_and_detect(ref_bytes)
+        live_img, live_arr, live_locs = _load_and_detect(live_image_bytes)
+    except Exception:
         return {"match": False, "score": 0.0, "error": "invalid_image"}
 
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    face_cascade = cv2.CascadeClassifier(cascade_path)
-
-    def _crop_face(gray_img):
-        faces = face_cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
-        if len(faces) == 0:
-            return None
-        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])  # largest face
-        return gray_img[y : y + h, x : x + w]
-
-    ref_face = _crop_face(ref_img)
-    live_face = _crop_face(live_img)
-
-    if live_face is None:
+    if not live_locs:
         return {"match": False, "score": 0.0, "error": "no_face_detected"}
 
-    # If no face found in stored reference photo, fall back to full image
-    if ref_face is None:
-        ref_face = ref_img
+    def _crop_face(arr, locs, pad: float = 0.2):
+        top, right, bottom, left = locs[0]
+        h, w = arr.shape[:2]
+        ph = int((bottom - top) * pad)
+        pw = int((right - left) * pad)
+        t = max(0, top - ph)
+        l = max(0, left - pw)
+        b = min(h, bottom + ph)
+        r = min(w, right + pw)
+        crop = Image.fromarray(arr[t:b, l:r])
+        return crop.convert("L").resize((128, 128), Image.LANCZOS)
 
-    size = (128, 128)
-    ref_resized = cv2.resize(ref_face, size)
-    live_resized = cv2.resize(live_face, size)
+    live_face = _crop_face(live_arr, live_locs)
+    # Fall back to full image if reference has no detectable face
+    ref_face = _crop_face(ref_arr, ref_locs) if ref_locs else Image.fromarray(ref_arr).convert("L").resize((128, 128))
 
-    ref_hist = cv2.calcHist([ref_resized], [0], None, [256], [0, 256])
-    live_hist = cv2.calcHist([live_resized], [0], None, [256], [0, 256])
-    cv2.normalize(ref_hist, ref_hist)
-    cv2.normalize(live_hist, live_hist)
+    ref_hist, _ = np.histogram(np.array(ref_face, dtype=float), bins=64, range=(0, 256))
+    live_hist, _ = np.histogram(np.array(live_face, dtype=float), bins=64, range=(0, 256))
 
-    score = float(cv2.compareHist(ref_hist, live_hist, cv2.HISTCMP_CORREL))
+    ref_hist = ref_hist / (ref_hist.sum() + 1e-8)
+    live_hist = live_hist / (live_hist.sum() + 1e-8)
+
+    # Bhattacharyya similarity coefficient: 1.0 = identical, ~0.5 = unrelated
+    score = float(np.sum(np.sqrt(ref_hist * live_hist)))
+
     return {"match": score >= threshold, "score": round(score, 4), "error": None}

@@ -62,23 +62,23 @@ async def register_face(
 
 
 @router.post("/compare")
-async def compare_face(
+def compare_face(
     empid: int = Form(...),
     faceImage: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     """
     Compare a selfie against the employee's stored registration photo.
-    Used at check-in and check-out. Returns {match, score} in ~200ms.
+    Used at check-in and check-out. FastAPI runs sync def in a thread pool,
+    so the CPU-bound face detection doesn't block the event loop.
     """
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
     if not existing:
         return JSONResponse(status_code=404, content={"match": False, "message": "No registered face found. Please contact admin."})
     if not existing.photo:
-        # Face encoding exists but photo not stored yet — re-register to fix
         return JSONResponse(status_code=404, content={"match": False, "message": "Reference photo missing. Please re-register face with admin."})
 
-    image_bytes = await faceImage.read()
+    image_bytes = faceImage.file.read()
     try:
         result = face_svc.compare_fast(existing.photo, image_bytes)
     except RuntimeError as e:
