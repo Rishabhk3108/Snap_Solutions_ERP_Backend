@@ -1,6 +1,8 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -242,11 +244,30 @@ def get_incomplete_checkouts_today(db: Session = Depends(get_db)):
     ]
 
 
+def _bg_write_checkin(empid, project_id, date_str, start_time, location, year, month):
+    """Background task: INSERT attendance row. Runs after the HTTP response is sent."""
+    from app.core.database import SessionLocal
+    from app.core.models import Attendance
+    db = SessionLocal()
+    try:
+        record = Attendance(
+            empid=empid, project_id=project_id, date=date_str,
+            start_time=start_time, location=location, year=year, month=month,
+        )
+        db.add(record)
+        db.commit()
+    except Exception as exc:
+        logging.error("Background checkin write failed empid=%s date=%s: %s", empid, date_str, exc)
+    finally:
+        db.close()
+
+
 # POST /api/attendance/checkin  — fast path used by the mobile app after face verification.
-# Skips the User/Project existence checks (both were validated at login) to reduce
-# DB round trips from 5 → 2 (duplicate check + INSERT).
+# 1. Duplicate check SELECT  (1 round trip, blocks response)
+# 2. Return 200 immediately
+# 3. INSERT runs as a background task after response is delivered
 @router.post("/checkin")
-def checkin(body: AddAttendanceBody, db: Session = Depends(get_db)):
+def checkin(body: AddAttendanceBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     from app.core.models import Attendance
     existing = db.query(Attendance).filter(
         Attendance.empid == body.empid,
@@ -256,15 +277,9 @@ def checkin(body: AddAttendanceBody, db: Session = Depends(get_db)):
     if existing:
         return JSONResponse(status_code=200, content={"message": "Already checked in today."})
 
-    record = Attendance(
-        empid=body.empid,
-        project_id=body.projectId,
-        date=body.date,
-        start_time=body.startTime,
-        location=body.location,
-        year=body.year,
-        month=body.month,
+    background_tasks.add_task(
+        _bg_write_checkin,
+        body.empid, body.projectId, body.date,
+        body.startTime, body.location, body.year, body.month,
     )
-    db.add(record)
-    db.commit()
-    return JSONResponse(status_code=200, content={"message": "Attendance added successfully."})
+    return JSONResponse(status_code=200, content={"message": "Check-in recorded."})
