@@ -244,6 +244,23 @@ def get_incomplete_checkouts_today(db: Session = Depends(get_db)):
     ]
 
 
+def _bg_write_checkout(record_id: int, end_time: str, hours: float):
+    """Background task: UPDATE attendance row with endTime + hours."""
+    from app.core.database import SessionLocal
+    from app.core.models import Attendance
+    db = SessionLocal()
+    try:
+        record = db.query(Attendance).filter(Attendance.id == record_id).first()
+        if record:
+            record.end_time = end_time
+            record.number_of_hours = hours
+            db.commit()
+    except Exception as exc:
+        logging.error("Background checkout write failed record_id=%s: %s", record_id, exc)
+    finally:
+        db.close()
+
+
 def _bg_write_checkin(empid, project_id, date_str, start_time, location, year, month):
     """Background task: INSERT attendance row. Runs after the HTTP response is sent."""
     from app.core.database import SessionLocal
@@ -283,3 +300,28 @@ def checkin(body: AddAttendanceBody, background_tasks: BackgroundTasks, db: Sess
         body.startTime, body.location, body.year, body.month,
     )
     return JSONResponse(status_code=200, content={"message": "Check-in recorded."})
+
+
+# POST /api/attendance/checkout — fast path used by the mobile app after face verification.
+# 1. SELECT existing record to get start_time + calculate hours  (1 round trip)
+# 2. Return 200 immediately
+# 3. UPDATE runs as a background task after response is delivered
+@router.post("/checkout")
+def checkout(body: UpdateAttendanceBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from app.core.models import Attendance
+    record = db.query(Attendance).filter(
+        Attendance.empid == body.empid,
+        Attendance.date == body.date,
+    ).first()
+    if not record:
+        return JSONResponse(status_code=404, content={"error": "No check-in found for today."})
+    if record.end_time:
+        return JSONResponse(status_code=200, content={"message": "Already checked out today."})
+
+    try:
+        hours = svc._hours_between(record.start_time, body.endTime)
+    except Exception:
+        hours = 0.0
+
+    background_tasks.add_task(_bg_write_checkout, record.id, body.endTime, round(hours, 2))
+    return JSONResponse(status_code=200, content={"message": "Check-out recorded."})
