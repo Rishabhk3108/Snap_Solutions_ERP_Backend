@@ -8,7 +8,9 @@ from app.core.config import DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{quote(DB_PASS, safe='')}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
 
 engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# expire_on_commit=False avoids the extra SELECT that SQLAlchemy does after every
+# commit to reload expired attributes — saves one DB round trip per write.
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
 

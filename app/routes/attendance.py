@@ -242,8 +242,29 @@ def get_incomplete_checkouts_today(db: Session = Depends(get_db)):
     ]
 
 
-# POST /api/attendance/checkin  — alias used by the mobile app (identity verified on-device via biometrics)
+# POST /api/attendance/checkin  — fast path used by the mobile app after face verification.
+# Skips the User/Project existence checks (both were validated at login) to reduce
+# DB round trips from 5 → 2 (duplicate check + INSERT).
 @router.post("/checkin")
 def checkin(body: AddAttendanceBody, db: Session = Depends(get_db)):
-    result = svc.add_attendance(db, body.empid, body.projectId, body.date, body.startTime, body.location, body.year, body.month)
-    return _respond(result)
+    from app.core.models import Attendance
+    existing = db.query(Attendance).filter(
+        Attendance.empid == body.empid,
+        Attendance.project_id == body.projectId,
+        Attendance.date == body.date,
+    ).first()
+    if existing:
+        return JSONResponse(status_code=200, content={"message": "Already checked in today."})
+
+    record = Attendance(
+        empid=body.empid,
+        project_id=body.projectId,
+        date=body.date,
+        start_time=body.startTime,
+        location=body.location,
+        year=body.year,
+        month=body.month,
+    )
+    db.add(record)
+    db.commit()
+    return JSONResponse(status_code=200, content={"message": "Attendance added successfully."})
