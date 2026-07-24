@@ -42,7 +42,8 @@ def add_face(image_bytes: bytes) -> str:
     """
     Upload a registration photo to the Azure FaceList.
     Returns the persistedFaceId (store this in the DB).
-    Raises requests.HTTPError on failure.
+    Raises ValueError('no_face') if Azure cannot detect a face.
+    Raises requests.HTTPError on other failures.
     """
     r = requests.post(
         f"{_base()}/facelists/{_LIST_ID}/persistedfaces",
@@ -51,6 +52,13 @@ def add_face(image_bytes: bytes) -> str:
         data=image_bytes,
         timeout=20,
     )
+    if r.status_code == 400:
+        try:
+            code = r.json().get("error", {}).get("code", "")
+        except Exception:
+            code = ""
+        if code in ("NoFaceDetected", "InvalidImage", "BadArgument"):
+            raise ValueError("no_face")
     r.raise_for_status()
     return r.json()["persistedFaceId"]
 

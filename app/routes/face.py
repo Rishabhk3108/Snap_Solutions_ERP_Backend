@@ -27,7 +27,10 @@ async def register_face(
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
 
     if azure_face.is_configured():
-        azure_face.ensure_face_list()
+        try:
+            azure_face.ensure_face_list()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail="Face service temporarily unavailable. Please try again in a moment.")
 
         # Remove the old Azure face before re-registering (avoids orphaned entries)
         if existing and existing.azure_person_id:
@@ -35,8 +38,13 @@ async def register_face(
 
         try:
             persisted_face_id = azure_face.add_face(image_bytes)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="No face detected. Please retake the photo in good lighting with your face clearly visible and centred.",
+            )
         except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Azure Face registration failed: {str(e)}")
+            raise HTTPException(status_code=503, detail=f"Face service error: {str(e)}")
 
         if existing:
             existing.azure_person_id = persisted_face_id
