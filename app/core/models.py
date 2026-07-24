@@ -400,8 +400,9 @@ class FaceEncoding(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     empid = Column(Integer, ForeignKey("employees.id"), nullable=False, unique=True)
-    encoding = Column(Text, nullable=False)  # JSON array of 128 floats from dlib ResNet
-    photo = Column(Text, nullable=True)      # base64-encoded reference face photo (stored at registration)
+    encoding = Column(Text, nullable=False)  # JSON array of 128 floats from dlib ResNet (legacy)
+    photo = Column(Text, nullable=True)      # base64 face crop used by PIL fallback
+    azure_person_id = Column(Text, nullable=True)  # Azure Face API persistedFaceId (primary)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
