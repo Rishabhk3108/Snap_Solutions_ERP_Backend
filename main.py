@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.services import azure_face
 from app.routes import attendance
 from app.routes import auth
 from app.routes import users
@@ -61,6 +62,15 @@ Base.metadata.create_all(
 )
 
 app = FastAPI(title="Snap Solutions ERP API")
+
+
+@app.on_event("startup")
+def _init_azure():
+    """Create the Azure FaceList on boot so it's ready for the first registration."""
+    try:
+        azure_face.ensure_face_list()
+    except Exception as exc:
+        print(f"[startup] Azure FaceList init skipped: {exc}")
 
 app.add_middleware(
     CORSMiddleware,

@@ -9,3 +9,4 @@ face_recognition
 python-multipart
 Pillow
 numpy
+requests
