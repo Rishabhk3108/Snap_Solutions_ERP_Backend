@@ -1,9 +1,13 @@
+import base64
+import concurrent.futures
+import io
 import os
+
 import requests
+from PIL import Image
 
 _KEY = os.getenv("AZURE_FACE_KEY", "")
 _ENDPOINT = os.getenv("AZURE_FACE_ENDPOINT", "").rstrip("/")
-_LIST_ID = "snap-employees"
 _DETECT_MODEL = "detection_03"
 _RECOG_MODEL = "recognition_04"
 
@@ -23,67 +27,20 @@ def is_configured() -> bool:
     return bool(_KEY and _ENDPOINT)
 
 
-def ensure_face_list() -> None:
-    """Create the FaceList if it doesn't exist yet. Safe to call on every startup."""
-    if not is_configured():
-        return
-    url = f"{_base()}/facelists/{_LIST_ID}"
-    r = requests.get(url, headers=_h(), timeout=10)
-    if r.status_code == 404:
-        requests.put(
-            url,
-            headers=_h(),
-            json={"name": "Snap Employees", "recognitionModel": _RECOG_MODEL},
-            timeout=10,
-        ).raise_for_status()
+def _compress(image_bytes: bytes, max_dim: int = 512) -> bytes:
+    """Resize to max_dim on longest side and re-encode as JPEG. Keeps Azure payloads small."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    w, h = img.size
+    if max(w, h) > max_dim:
+        scale = max_dim / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=88)
+    return buf.getvalue()
 
 
-def add_face(image_bytes: bytes) -> str:
-    """
-    Upload a registration photo to the Azure FaceList.
-    Returns the persistedFaceId (store this in the DB).
-    Raises ValueError('no_face') if Azure cannot detect a face.
-    Raises requests.HTTPError on other failures.
-    """
-    r = requests.post(
-        f"{_base()}/facelists/{_LIST_ID}/persistedfaces",
-        headers=_h("application/octet-stream"),
-        params={"detectionModel": _DETECT_MODEL},
-        data=image_bytes,
-        timeout=20,
-    )
-    if r.status_code == 400:
-        try:
-            code = r.json().get("error", {}).get("code", "")
-        except Exception:
-            code = ""
-        if code in ("NoFaceDetected", "InvalidImage", "BadArgument"):
-            raise ValueError("no_face")
-    r.raise_for_status()
-    return r.json()["persistedFaceId"]
-
-
-def remove_face(persisted_face_id: str) -> None:
-    """Remove a persisted face from the FaceList (call before re-registering an employee)."""
-    requests.delete(
-        f"{_base()}/facelists/{_LIST_ID}/persistedfaces/{persisted_face_id}",
-        headers=_h(),
-        timeout=10,
-    )
-
-
-def verify(selfie_bytes: bytes, persisted_face_id: str, threshold: float = 0.5) -> dict:
-    """
-    Verify a live selfie against the employee's registered face.
-
-    Flow:
-      1. Detect face in selfie → get temporary faceId (expires in 24h — we never store it)
-      2. FindSimilar against our FaceList → returns ranked candidates with confidence
-      3. Check if the top candidate is the expected employee AND confidence >= threshold
-
-    Returns {"match": bool, "score": float, "error": str|None}
-    """
-    # Step 1 — detect
+def _detect(image_bytes: bytes) -> list:
+    """Call Azure Face Detect. Returns list of face objects with faceId."""
     r = requests.post(
         f"{_base()}/detect",
         headers=_h("application/octet-stream"),
@@ -92,41 +49,72 @@ def verify(selfie_bytes: bytes, persisted_face_id: str, threshold: float = 0.5) 
             "recognitionModel": _RECOG_MODEL,
             "returnFaceId": "true",
         },
-        data=selfie_bytes,
+        data=image_bytes,
         timeout=15,
     )
     r.raise_for_status()
-    faces = r.json()
+    return r.json()
+
+
+def validate_face(image_bytes: bytes) -> str:
+    """
+    Validate that the registration photo has a detectable face.
+    Returns a compressed base64 JPEG suitable for storage in the DB photo column.
+    Raises ValueError('no_face') if Azure cannot find a face.
+    """
+    compressed = _compress(image_bytes)
+    faces = _detect(compressed)
     if not faces:
+        raise ValueError("no_face")
+    return base64.b64encode(compressed).decode()
+
+
+def verify(selfie_bytes: bytes, ref_photo_b64: str, threshold: float = 0.6) -> dict:
+    """
+    Verify a selfie against a stored reference photo.
+
+    Uses Detect×2 (parallel) + Verify — fully supported on the F0 free tier.
+    No FaceList or PersonGroup is involved, so no Limited Access approval is needed.
+
+    Flow:
+      1. Compress selfie and decode reference photo
+      2. Call Azure Detect on both simultaneously (ThreadPoolExecutor)
+      3. Call Azure Verify(refFaceId, liveFaceId) → isIdentical + confidence
+
+    Returns {"match": bool, "score": float, "error": str|None}
+    """
+    ref_bytes = base64.b64decode(ref_photo_b64)
+    compressed_selfie = _compress(selfie_bytes)
+
+    # Detect both faces in parallel to cut wall-clock time roughly in half
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        ref_fut = ex.submit(_detect, ref_bytes)
+        live_fut = ex.submit(_detect, compressed_selfie)
+        ref_faces = ref_fut.result()
+        live_faces = live_fut.result()
+
+    if not ref_faces:
+        return {"match": False, "score": 0.0, "error": "no_ref_face"}
+    if not live_faces:
         return {"match": False, "score": 0.0, "error": "no_face_detected"}
 
-    # Pick the largest face (most likely the employee in a selfie)
-    face_id = max(
-        faces,
+    ref_face_id = ref_faces[0]["faceId"]
+    live_face_id = max(
+        live_faces,
         key=lambda f: f["faceRectangle"]["width"] * f["faceRectangle"]["height"],
     )["faceId"]
 
-    # Step 2 — find similar in our company FaceList
     r = requests.post(
-        f"{_base()}/findsimilars",
+        f"{_base()}/verify",
         headers=_h(),
-        json={
-            "faceId": face_id,
-            "faceListId": _LIST_ID,
-            "maxNumOfCandidatesReturned": 1,
-            "mode": "matchPerson",
-        },
+        json={"faceId1": ref_face_id, "faceId2": live_face_id},
         timeout=15,
     )
     r.raise_for_status()
-    candidates = r.json()
-
-    if not candidates:
-        return {"match": False, "score": 0.0, "error": None}
-
-    top = candidates[0]
-    confidence = float(top.get("confidence", 0.0))
-    # Verify the top match is THIS employee specifically (prevents proxy check-in)
-    matched = (top.get("persistedFaceId") == persisted_face_id) and (confidence >= threshold)
-
-    return {"match": matched, "score": round(confidence, 4), "error": None}
+    result = r.json()
+    confidence = float(result.get("confidence", 0.0))
+    return {
+        "match": result.get("isIdentical", False) and confidence >= threshold,
+        "score": round(confidence, 4),
+        "error": None,
+    }

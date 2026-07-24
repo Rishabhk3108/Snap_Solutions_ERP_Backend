@@ -20,37 +20,29 @@ async def register_face(
 ):
     """
     Enrol an employee's face.
-    - If Azure Face API is configured: uploads to Azure FaceList and stores persistedFaceId.
-    - Fallback: dlib encoding + PIL face crop stored locally (Railway CPU, slower).
+    - Azure path: calls Detect to validate the photo has a clear face, then stores a
+      compressed JPEG (base64) in the photo column for use at check-in.
+    - Fallback: dlib encoding + PIL face crop stored locally.
     """
     image_bytes = await faceImage.read()
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
 
     if azure_face.is_configured():
         try:
-            azure_face.ensure_face_list()
-        except Exception as e:
-            raise HTTPException(status_code=503, detail="Face service temporarily unavailable. Please try again in a moment.")
-
-        # Remove the old Azure face before re-registering (avoids orphaned entries)
-        if existing and existing.azure_person_id:
-            azure_face.remove_face(existing.azure_person_id)
-
-        try:
-            persisted_face_id = azure_face.add_face(image_bytes)
+            photo_b64 = azure_face.validate_face(image_bytes)
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail="No face detected. Please retake the photo in good lighting with your face clearly visible and centred.",
+                detail="No face detected. Use a clear, well-lit, front-facing photo.",
             )
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Face service error: {str(e)}")
 
         if existing:
-            existing.azure_person_id = persisted_face_id
-            existing.photo = None  # Azure is now authoritative; clear stale PIL crop
+            existing.photo = photo_b64
+            existing.encoding = "[]"
         else:
-            db.add(FaceEncoding(empid=empid, encoding="[]", photo=None, azure_person_id=persisted_face_id))
+            db.add(FaceEncoding(empid=empid, encoding="[]", photo=photo_b64))
         db.commit()
         return {"message": "Face registered successfully", "empid": empid, "provider": "azure"}
 
@@ -79,9 +71,10 @@ def compare_face(
     db: Session = Depends(get_db),
 ):
     """
-    Compare a selfie against the employee's stored registration.
-    Called at every check-in and check-out. Runs sync so FastAPI uses a thread pool.
-    Azure path: ~500ms. PIL fallback: ~50ms (less accurate).
+    Compare a selfie against the employee's stored registration photo.
+    Called at every check-in and check-out. Sync def → FastAPI thread pool.
+    Azure path: Detect×2 (parallel) + Verify ≈ 600–900ms.
+    PIL fallback: histogram comparison ≈ 50ms (less accurate).
     """
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
     if not existing:
@@ -89,15 +82,17 @@ def compare_face(
 
     image_bytes = faceImage.file.read()
 
-    # Azure path — preferred when employee is registered via Azure
-    if azure_face.is_configured() and existing.azure_person_id:
+    # Azure path — available when employee has a stored reference photo
+    if azure_face.is_configured() and existing.photo:
         try:
-            result = azure_face.verify(image_bytes, existing.azure_person_id)
+            result = azure_face.verify(image_bytes, existing.photo)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Face verification service error: {str(e)}")
 
         if result.get("error") == "no_face_detected":
             return JSONResponse(status_code=400, content={"match": False, "message": "No face detected. Move to better lighting and try again."})
+        if result.get("error") == "no_ref_face":
+            return JSONResponse(status_code=400, content={"match": False, "message": "Reference photo corrupted. Please ask admin to re-register your face."})
 
         return JSONResponse({
             "match": result["match"],
@@ -105,7 +100,7 @@ def compare_face(
             "message": "Face verified." if result["match"] else "Face not recognized. Please try again or contact admin.",
         })
 
-    # PIL fallback — for employees not yet re-registered after Azure was added
+    # PIL fallback — for employees whose photo was stored as a face crop (old format)
     if not existing.photo:
         return JSONResponse(status_code=404, content={"match": False, "message": "Reference photo missing. Please ask admin to re-register your face."})
 
@@ -130,14 +125,14 @@ def compare_face(
 
 @router.get("/status/{empid}")
 def face_status(empid: int, db: Session = Depends(get_db)):
-    """Return whether an employee has a registered face encoding."""
+    """Return whether an employee has a registered face."""
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
     if not existing:
         return JSONResponse({"empid": empid, "registered": False})
     return JSONResponse({
         "empid": empid,
         "registered": True,
-        "provider": "azure" if existing.azure_person_id else "local",
+        "provider": "azure" if azure_face.is_configured() and existing.photo else "local",
     })
 
 
@@ -147,18 +142,15 @@ async def verify_face_test(
     faceImage: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """
-    Verify a selfie without marking attendance. Used during onboarding to confirm enrolment.
-    Delegates to the same Azure path as /compare when available.
-    """
+    """Verify without marking attendance. Used during onboarding to confirm enrolment worked."""
     image_bytes = await faceImage.read()
     stored = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
     if not stored:
         raise HTTPException(status_code=404, detail="No registered face found. Complete face enrolment first.")
 
-    if azure_face.is_configured() and stored.azure_person_id:
+    if azure_face.is_configured() and stored.photo:
         try:
-            result = azure_face.verify(image_bytes, stored.azure_person_id)
+            result = azure_face.verify(image_bytes, stored.photo)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Face verification service error: {str(e)}")
 
@@ -169,7 +161,7 @@ async def verify_face_test(
             return JSONResponse(status_code=401, content={"match": False, "score": result["score"], "message": "Face not recognized. Please retake the selfie."})
         return JSONResponse({"match": True, "score": result["score"], "message": "Face verified successfully!"})
 
-    # Fallback: dlib comparison
+    # Fallback: dlib
     if not face_svc.is_available():
         raise HTTPException(status_code=503, detail="Face recognition service not available on this server.")
 
@@ -189,11 +181,6 @@ def remove_face(empid: int, db: Session = Depends(get_db)):
     existing = db.query(FaceEncoding).filter(FaceEncoding.empid == empid).first()
     if not existing:
         raise HTTPException(status_code=404, detail="No face encoding found for this employee.")
-
-    # Clean up Azure FaceList entry too
-    if existing.azure_person_id and azure_face.is_configured():
-        azure_face.remove_face(existing.azure_person_id)
-
     db.delete(existing)
     db.commit()
     return {"message": "Face encoding removed", "empid": empid}
