@@ -1,6 +1,7 @@
 import json
+import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -10,6 +11,26 @@ from app.services import face as face_svc
 from app.services import luxand_face
 
 router = APIRouter()
+
+
+def _bg_save_face(empid: int, uuid: str, existing_id: int | None):
+    """Background task: write the Luxand UUID to the DB after the HTTP response is sent."""
+    from app.core.database import SessionLocal
+    from app.core.models import FaceEncoding
+    db = SessionLocal()
+    try:
+        if existing_id:
+            record = db.query(FaceEncoding).filter(FaceEncoding.id == existing_id).first()
+            if record:
+                record.encoding = uuid
+                record.photo = None
+        else:
+            db.add(FaceEncoding(empid=empid, encoding=uuid, photo=None))
+        db.commit()
+    except Exception as exc:
+        logging.error("Background face save failed empid=%s: %s", empid, exc)
+    finally:
+        db.close()
 
 
 def _is_luxand_uuid(value: str) -> bool:
@@ -25,14 +46,17 @@ def _is_luxand_uuid(value: str) -> bool:
 async def register_face(
     empid: int = Form(...),
     faceImage: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db),
 ):
     """
     Enrol an employee's face.
 
     Luxand path (when LUXAND_API_TOKEN is set):
-      Creates a person in Luxand cloud and stores the returned UUID in the
-      encoding column. No photo bytes stored locally — Luxand holds the face data.
+      1. Duplicate check SELECT (1 round trip)
+      2. Luxand create_person API call
+      3. Return HTTP 200 immediately — DB write happens in background
+      Mobile gets a response as soon as Luxand confirms the face.
 
     Fallback (no LUXAND_API_TOKEN):
       Runs dlib on the server and stores the face crop locally for PIL comparison.
@@ -56,12 +80,8 @@ async def register_face(
                 )
             raise HTTPException(status_code=503, detail=f"Face service error: {str(e)}")
 
-        if existing:
-            existing.encoding = uuid
-            existing.photo = None
-        else:
-            db.add(FaceEncoding(empid=empid, encoding=uuid, photo=None))
-        db.commit()
+        # Return immediately — DB write runs after the response is sent
+        background_tasks.add_task(_bg_save_face, empid, uuid, existing.id if existing else None)
         return {"message": "Face registered successfully", "empid": empid, "provider": "luxand"}
 
     # Fallback: local dlib + PIL
