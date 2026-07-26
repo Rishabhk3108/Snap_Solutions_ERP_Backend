@@ -79,9 +79,11 @@ class Attendance(Base):
     location = Column(String(255), nullable=True)
     year = Column(Integer, nullable=False)
     month = Column(Integer, nullable=False)
+    marked_by = Column("marked_by", Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
 
     user = relationship("User", back_populates="attendances", foreign_keys=[empid])
     project = relationship("Project", back_populates="attendances")
+    marked_by_user = relationship("User", foreign_keys=[marked_by])
 
 
 class Restdays(Base):

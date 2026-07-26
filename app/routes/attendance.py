@@ -244,7 +244,7 @@ def get_incomplete_checkouts_today(db: Session = Depends(get_db)):
     ]
 
 
-def _bg_write_checkout(record_id: int, end_time: str, hours: float):
+def _bg_write_checkout(record_id: int, end_time: str, hours: float, marked_by: Optional[int] = None):
     """Background task: UPDATE attendance row with endTime + hours."""
     from app.core.database import SessionLocal
     from app.core.models import Attendance
@@ -254,6 +254,8 @@ def _bg_write_checkout(record_id: int, end_time: str, hours: float):
         if record:
             record.end_time = end_time
             record.number_of_hours = hours
+            if marked_by is not None:
+                record.marked_by = marked_by
             db.commit()
     except Exception as exc:
         logging.error("Background checkout write failed record_id=%s: %s", record_id, exc)
@@ -261,7 +263,7 @@ def _bg_write_checkout(record_id: int, end_time: str, hours: float):
         db.close()
 
 
-def _bg_write_checkin(empid, project_id, date_str, start_time, location, year, month):
+def _bg_write_checkin(empid, project_id, date_str, start_time, location, year, month, marked_by=None):
     """Background task: INSERT attendance row. Runs after the HTTP response is sent."""
     from app.core.database import SessionLocal
     from app.core.models import Attendance
@@ -270,6 +272,7 @@ def _bg_write_checkin(empid, project_id, date_str, start_time, location, year, m
         record = Attendance(
             empid=empid, project_id=project_id, date=date_str,
             start_time=start_time, location=location, year=year, month=month,
+            marked_by=marked_by,
         )
         db.add(record)
         db.commit()
@@ -283,9 +286,19 @@ def _bg_write_checkin(empid, project_id, date_str, start_time, location, year, m
 # 1. Duplicate check SELECT  (1 round trip, blocks response)
 # 2. Return 200 immediately
 # 3. INSERT runs as a background task after response is delivered
+#
+# Requires a valid token: the caller either checks in for themselves, or — if they are the
+# ROLE_ADMIN / ROLE_MANAGER of the target employee's project — checks in on that employee's
+# behalf (a "My Team" proxy check-in). The record's marked_by column captures which case it was.
 @router.post("/checkin")
-def checkin(body: AddAttendanceBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def checkin(body: AddAttendanceBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db), auth=Depends(require_token)):
     from app.core.models import Attendance
+
+    caller_id = auth.get("user", {}).get("id")
+    marked_by, err = svc.authorize_attendance_actor(db, caller_id, body.empid)
+    if err:
+        return _respond(err)
+
     existing = db.query(Attendance).filter(
         Attendance.empid == body.empid,
         Attendance.project_id == body.projectId,
@@ -297,7 +310,7 @@ def checkin(body: AddAttendanceBody, background_tasks: BackgroundTasks, db: Sess
     background_tasks.add_task(
         _bg_write_checkin,
         body.empid, body.projectId, body.date,
-        body.startTime, body.location, body.year, body.month,
+        body.startTime, body.location, body.year, body.month, marked_by,
     )
     return JSONResponse(status_code=200, content={"message": "Check-in recorded."})
 
@@ -307,8 +320,14 @@ def checkin(body: AddAttendanceBody, background_tasks: BackgroundTasks, db: Sess
 # 2. Return 200 immediately
 # 3. UPDATE runs as a background task after response is delivered
 @router.post("/checkout")
-def checkout(body: UpdateAttendanceBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def checkout(body: UpdateAttendanceBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db), auth=Depends(require_token)):
     from app.core.models import Attendance
+
+    caller_id = auth.get("user", {}).get("id")
+    marked_by, err = svc.authorize_attendance_actor(db, caller_id, body.empid)
+    if err:
+        return _respond(err)
+
     record = db.query(Attendance).filter(
         Attendance.empid == body.empid,
         Attendance.date == body.date,
@@ -323,5 +342,16 @@ def checkout(body: UpdateAttendanceBody, background_tasks: BackgroundTasks, db: 
     except Exception:
         hours = 0.0
 
-    background_tasks.add_task(_bg_write_checkout, record.id, body.endTime, round(hours, 2))
+    background_tasks.add_task(_bg_write_checkout, record.id, body.endTime, round(hours, 2), marked_by)
     return JSONResponse(status_code=200, content={"message": "Check-out recorded."})
+
+
+# GET /api/attendance/my-team — employees grouped by project, with today's status,
+# for the ROLE_MANAGER/ROLE_ADMIN "My Team" proxy check-in/out screen.
+@router.get("/my-team")
+def get_my_team(db: Session = Depends(get_db), auth=Depends(require_token)):
+    caller = auth.get("user", {})
+    if caller.get("role") not in ("ROLE_ADMIN", "ROLE_MANAGER"):
+        return JSONResponse(status_code=403, content={"error": "Access denied: Role can't access this api"})
+    result = svc.get_my_team(db, caller.get("id"), caller.get("role"))
+    return _respond(result)

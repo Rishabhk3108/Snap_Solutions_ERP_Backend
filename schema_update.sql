@@ -83,3 +83,10 @@ CREATE TABLE IF NOT EXISTS employee (
     nominee_name     VARCHAR(255),
     nominee_relation VARCHAR(255)
 );
+
+-- ─────────────────────────────────────────────────────────────
+-- 6. Proxy check-in/out: record who actually marked an attendance row
+--    (NULL = self-marked; set to the manager's empid for proxy entries)
+-- ─────────────────────────────────────────────────────────────
+ALTER TABLE attendance
+    ADD COLUMN IF NOT EXISTS marked_by INTEGER REFERENCES employees(id) ON DELETE SET NULL;

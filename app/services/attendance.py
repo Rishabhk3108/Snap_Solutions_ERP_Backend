@@ -263,6 +263,7 @@ def get_attendance_list_for_employee(db: Session, empid: int, year: int, month: 
             "endTime": _fmt_time(r.end_time) or "Not Updated",
             "numberOfHours": r.number_of_hours or 0,
             "location": r.location,
+            "markedByName": r.marked_by_user.full_name if r.marked_by_user else None,
         }
         for r in records
     ]
@@ -366,6 +367,71 @@ def _manager_emp_ids(db: Session, manager_id: int):
     return [u.id for u in db.query(User).filter(User.project_id.in_(managed)).all()]
 
 
+def authorize_attendance_actor(db: Session, caller_id: Optional[int], target_empid: int):
+    """
+    Checks whether caller_id may check in/out on behalf of target_empid.
+
+    Returns (marked_by, error):
+      - (None, None)        caller is marking their own attendance.
+      - (caller_id, None)   caller is an authorized proxy (admin, or the target's project manager).
+      - (None, error_dict)  not authorized — error_dict is meant for _respond().
+    """
+    if caller_id is None:
+        return None, {"status": 401, "error": "Missing or invalid session."}
+    if caller_id == target_empid:
+        return None, None
+
+    caller = db.query(User).filter(User.id == caller_id).first()
+    if not caller:
+        return None, {"status": 401, "error": "Invalid actor."}
+    if caller.role == "ROLE_ADMIN":
+        return caller_id, None
+    if caller.role == "ROLE_MANAGER" and target_empid in _manager_emp_ids(db, caller_id):
+        return caller_id, None
+
+    return None, {"status": 403, "error": "You are not authorized to mark attendance for this employee."}
+
+
+def get_my_team(db: Session, caller_id: int, caller_role: str) -> dict:
+    """Employees grouped by project, for the 'My Team' proxy check-in screen."""
+    from app.core.models import Project, ProjectManager
+
+    if caller_role == "ROLE_ADMIN":
+        projects = db.query(Project).order_by(Project.id).all()
+    else:
+        project_ids = [
+            pm.project_id for pm in db.query(ProjectManager).filter(ProjectManager.manager_id == caller_id).all()
+        ]
+        projects = (
+            db.query(Project).filter(Project.id.in_(project_ids)).order_by(Project.id).all()
+            if project_ids else []
+        )
+
+    today_str = date.today().isoformat()
+    groups = []
+    for p in projects:
+        employees = (
+            db.query(User)
+            .filter(User.project_id == p.id, User.active == True, User.id != caller_id)
+            .order_by(User.full_name)
+            .all()
+        )
+        if not employees:
+            continue
+        members = []
+        for emp in employees:
+            status_result = get_attendance_status(db, emp.id, today_str)
+            members.append({
+                "empid": emp.id,
+                "name": emp.full_name,
+                "jobTitle": emp.job_title,
+                "status": status_result["data"]["status"],
+            })
+        groups.append({"projectId": p.id, "projectName": p.name, "members": members})
+
+    return {"status": 200, "data": groups}
+
+
 def get_filtered_attendance(
     db: Session, start_date: str, end_date: str, project_id: Optional[int],
     caller_role: str = None, caller_id: int = None,
@@ -405,6 +471,7 @@ def get_filtered_attendance(
             "numberOfHours": r.number_of_hours or 0,
             "location": r.location or "N/A",
             "ot_hours": r.ot_hours,
+            "markedByName": r.marked_by_user.full_name if r.marked_by_user else None,
         }
         for r in records
     ]
@@ -523,6 +590,7 @@ def get_attendance_by_filter_employee(
             "numberOfHours": r.number_of_hours or 0,
             "location": r.location or "N/A",
             "OtHours": r.ot_hours,
+            "markedByName": r.marked_by_user.full_name if r.marked_by_user else None,
         }
         for r in records
     ]
