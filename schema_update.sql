@@ -90,3 +90,14 @@ CREATE TABLE IF NOT EXISTS employee (
 -- ─────────────────────────────────────────────────────────────
 ALTER TABLE attendance
     ADD COLUMN IF NOT EXISTS marked_by INTEGER REFERENCES employees(id) ON DELETE SET NULL;
+
+-- ─────────────────────────────────────────────────────────────
+-- 7. customers: gst/phone/email/pan_no were NOT NULL, but the
+--    customer creation form only ever collects name/email/phone/address
+--    (never gst or pan_no) — every create() call failed until this ran.
+-- ─────────────────────────────────────────────────────────────
+ALTER TABLE customers
+    ALTER COLUMN gst DROP NOT NULL,
+    ALTER COLUMN phone DROP NOT NULL,
+    ALTER COLUMN email DROP NOT NULL,
+    ALTER COLUMN pan_no DROP NOT NULL;

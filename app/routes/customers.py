@@ -51,7 +51,7 @@ def get_one(cust_id: int, db: Session = Depends(get_db), auth=Depends(require_to
 
 @router.post("")
 def create(body: CustomerBody, db: Session = Depends(get_db), auth=Depends(require_admin)):
-    c = CustomerModel(name=body.name, phone=body.phone, email=body.email, address=body.address, gst=body.gst, pan_no=body.panNo, status="Active")
+    c = CustomerModel(name=body.name, phone=body.phone, email=body.email, address=body.address, gst=body.gst, pan_no=body.panNo, status="active")
     db.add(c); db.commit(); db.refresh(c)
     return JSONResponse(status_code=201, content=_s(c))
 
