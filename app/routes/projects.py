@@ -76,6 +76,19 @@ def get_all(db: Session = Depends(get_db), auth=Depends(require_token)):
     return result
 
 
+@router.get("/project/mine")
+def get_my_projects(db: Session = Depends(get_db), auth=Depends(require_token)):
+    """Projects the caller manages, each with its full employee/manager roster — for the manager's own 'Projects' view."""
+    caller_id = auth.get("user", {}).get("id")
+    project_ids = [
+        pm.project_id for pm in db.query(ProjectManager).filter(ProjectManager.manager_id == caller_id).all()
+    ]
+    if not project_ids:
+        return []
+    projects = db.query(Project).filter(Project.id.in_(project_ids)).order_by(Project.id).all()
+    return [_s(p, db) for p in projects]
+
+
 @router.get("/project/{proj_id}")
 def get_one(proj_id: int, db: Session = Depends(get_db), auth=Depends(require_token)):
     p = db.query(Project).filter(Project.id == proj_id).first()
@@ -175,6 +188,12 @@ def assign_manager(proj_id: int, body: AssignManagerBody, db: Session = Depends(
     if current_count >= 1:
         return JSONResponse(status_code=400, content={"error": "This project already has a manager. Remove them first."})
     db.add(ProjectManager(project_id=proj_id, manager_id=body.managerId))
+    # A manager isn't automatically a "member" of the project via employees.project_id —
+    # that column is what the mobile app reads to resolve the logged-in user's own project
+    # for self check-in. Set it here (only if unset) so a newly-assigned manager isn't told
+    # "no project assigned" on their own device.
+    if mgr.project_id is None:
+        mgr.project_id = proj_id
     db.commit()
     return {"message": "Manager assigned"}
 
