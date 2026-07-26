@@ -416,8 +416,6 @@ def get_my_team(db: Session, caller_id: int, caller_role: str) -> dict:
             .order_by(User.full_name)
             .all()
         )
-        if not employees:
-            continue
         members = []
         for emp in employees:
             status_result = get_attendance_status(db, emp.id, today_str)
