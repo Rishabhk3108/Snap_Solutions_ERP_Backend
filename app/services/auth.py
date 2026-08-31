@@ -4,6 +4,7 @@ import bcrypt
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from app.core.models import User, UserPersonalInfo, UserFinancialInfo
+from app.services import personal_info as personal_info_svc
 
 SECRET_KEY = os.getenv("SECRET_KEY", "snap_erp_secret_key_change_me")
 ALGORITHM = "HS256"
@@ -45,7 +46,7 @@ def login(db: Session, username: str, password: str):
         "role": user.role,
         "departmentId": dept_id,
         "roleId": user.role_id,
-        "onboarding_complete": bool(user.onboarding_complete),
+        "onboarding_complete": personal_info_svc.sync_onboarding_flag(db, user.id),
         "projectId": user.project_id,
     }
     token = _make_token(user_data)

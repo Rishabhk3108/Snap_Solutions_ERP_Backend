@@ -101,3 +101,13 @@ ALTER TABLE customers
     ALTER COLUMN phone DROP NOT NULL,
     ALTER COLUMN email DROP NOT NULL,
     ALTER COLUMN pan_no DROP NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────
+-- 8. OT Working Hours — standard daily working-hours threshold used by
+--    app/services/attendance.py to split a shift into regular vs
+--    overtime minutes. The app/core/models.py column and the API
+--    already read/write this field; the column itself was never
+--    added to the live table.
+-- ─────────────────────────────────────────────────────────────
+ALTER TABLE user_financial_info
+    ADD COLUMN IF NOT EXISTS ot_working_hours INTEGER DEFAULT 8;

@@ -1,6 +1,11 @@
 from datetime import date
 from sqlalchemy.orm import Session
-from app.core.models import UserPersonalInfo
+from app.core.models import User, UserPersonalInfo
+
+# Fields the mobile onboarding wizard itself treats as mandatory (see
+# PersonalDetailsScreen.js). Used to derive onboarding completion from data,
+# not from who filled it in.
+REQUIRED_ONBOARDING_FIELDS = ("mobile", "nominee_name", "nominee_relationship")
 
 
 def _serialize(p: UserPersonalInfo) -> dict:
@@ -103,3 +108,25 @@ def delete_record(db: Session, record_id: int):
     db.delete(pi)
     db.commit()
     return 200, {"message": "UserPersonalInformation was deleted successfully!"}
+
+
+def sync_onboarding_flag(db: Session, user_id: int) -> bool:
+    """
+    Derive User.onboarding_complete from the presence of required personal-info
+    data instead of relying solely on the mobile app's explicit "finish
+    onboarding" call, so data entered by an admin (on their own or on the
+    employee's behalf) unblocks login the same way self-service entry does.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return False
+    if user.onboarding_complete:
+        return True
+
+    pi = db.query(UserPersonalInfo).filter(UserPersonalInfo.user_id == user_id).first()
+    if pi and all(getattr(pi, field) for field in REQUIRED_ONBOARDING_FIELDS):
+        user.onboarding_complete = True
+        db.commit()
+        return True
+
+    return False

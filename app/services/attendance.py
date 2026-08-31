@@ -44,10 +44,14 @@ def _hours_between(start_t, end_t) -> float:
     if isinstance(start_t, timedelta) and isinstance(end_t, timedelta):
         diff = end_t - start_t
         return diff.total_seconds() / 3600
-    # Fallback: parse HH:MM:SS strings
+    # Fallback: parse "HH:MM" or "HH:MM:SS" strings (e.g. <input type="time">
+    # values, which omit seconds)
     def parse(v):
         parts = str(v).split(":")
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        s = int(parts[2]) if len(parts) > 2 else 0
+        return h * 3600 + m * 60 + s
     return (parse(end_t) - parse(start_t)) / 3600
 
 
@@ -93,11 +97,17 @@ def add_attendance(
     year: int,
     month: int,
 ) -> dict:
-    if not db.query(User).filter(User.id == empid).first():
+    user = db.query(User).filter(User.id == empid).first()
+    if not user:
         return {"status": 404, "error": f"User with ID {empid} does not exist."}
 
     if not db.query(Project).filter(Project.id == project_id).first():
         return {"status": 404, "error": f"Project with ID {project_id} does not exist."}
+
+    if user.project_id is None:
+        return {"status": 400, "error": "This employee is not assigned to any project. Assign them to a project first."}
+    if user.project_id != project_id:
+        return {"status": 400, "error": "This employee is not assigned to the selected project."}
 
     existing = db.query(Attendance).filter(
         Attendance.empid == empid,
@@ -612,11 +622,17 @@ def add_full_attendance_with_ot(
     year = parsed_date.year
     month = parsed_date.month
 
-    if not db.query(User).filter(User.id == empid).first():
+    user = db.query(User).filter(User.id == empid).first()
+    if not user:
         return {"status": 400, "error": f"User with ID {empid} does not exist."}
 
     if not db.query(Project).filter(Project.id == project_id).first():
         return {"status": 400, "error": f"Project with ID {project_id} does not exist."}
+
+    if user.project_id is None:
+        return {"status": 400, "error": "This employee is not assigned to any project. Assign them to a project first."}
+    if user.project_id != project_id:
+        return {"status": 400, "error": "This employee is not assigned to the selected project."}
 
     if db.query(Attendance).filter(
         Attendance.empid == empid,

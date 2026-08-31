@@ -5,7 +5,12 @@ psycopg2-binary
 python-dotenv
 bcrypt
 pyjwt
-face_recognition
+# face_recognition  # requires dlib; needs Visual Studio C++ build tools to compile on Windows.
+# Not needed for local dev right now: the local-dlib path in app/services/face.py is only a
+# fallback used when LUXAND_API_TOKEN is unset AND something calls /api/face/register|compare,
+# neither of which the app currently does (mobile's face-capture flow is disabled). The import
+# is guarded (try/except ImportError) so the backend runs fine without it. Uncomment + install
+# if you need to exercise the local face-recognition fallback.
 python-multipart
 Pillow
 numpy
